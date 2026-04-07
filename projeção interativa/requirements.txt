@@ -1,0 +1,10 @@
+opencv-python
+numpy
+ultralytics
+pyyaml
+screeninfo
+fastapi
+uvicorn
+python-multipart
+jinja2
+psutil

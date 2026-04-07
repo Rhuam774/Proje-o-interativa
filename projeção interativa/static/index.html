@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Projeção Interativa | Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-container">
+        <header>
+            <div class="logo">
+                <span class="pulse"></span>
+                <h1>CORE <span>INTEL</span></h1>
+            </div>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="label">MODO:</span>
+                    <span id="simulation-status" class="value">ESTÁTICO</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">IA:</span>
+                    <span id="yolo-status" class="value">ATIVO</span>
+                </div>
+                <button id="btn-start-calibration" class="btn-glass primary small">CALIBRAR</button>
+                <button id="btn-power-off" class="btn-glass danger small">SAIR</button>
+            </div>
+        </header>
+
+        <main>
+            <section class="visualizer">
+                <div class="video-container">
+                    <img id="video-feed" src="/video_feed" alt="Camera Feed">
+                    <canvas id="interaction-canvas"></canvas>
+                    <div class="scanner-line"></div>
+                </div>
+                <div class="controls-overlay">
+                    <button id="btn-toggle-sim" class="btn-glass">SIMULAÇÃO</button>
+                    <button id="btn-toggle-yolo" class="btn-glass">DETECÇÃO IA</button>
+                    <button id="btn-reset" class="btn-glass danger">LIMPAR</button>
+                </div>
+            </section>
+
+            <aside class="sidebar">
+                <div class="card glass">
+                    <h3>DISPOSITIVOS</h3>
+                    <div class="input-group">
+                        <label>Monitor / Projetor</label>
+                        <select id="select-monitor" class="glass-select">
+                            <option>Carregando...</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="card glass tracker-list">
+                    <h3>RASTREAMENTO</h3>
+                    <ul id="list-trackers">
+                        <li class="empty-msg">Nenhum objeto selecionado</li>
+                    </ul>
+                </div>
+
+                <div class="card glass console">
+                    <h3>SYSTEM LOG</h3>
+                    <div id="log-output">
+                        <p class="info">Sistema inicializado...</p>
+                        <p class="success">Conectado ao Core Python.</p>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Modal para Nomear Tag -->
+    <div id="tag-modal" class="modal-overlay hidden">
+        <div class="modal-card glass">
+            <h2>Nomear Objeto</h2>
+            <input type="text" id="tag-input" placeholder="Ex: Bolinha, Gato, Humano...">
+            <div class="modal-actions">
+                <button id="btn-cancel-tag" class="btn-glass">Cancelar</button>
+                <button id="btn-confirm-tag" class="btn-glass primary">Adicionar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wizard de Calibração -->
+    <div id="calibration-wizard" class="modal-overlay hidden">
+        <div class="modal-card glass wide">
+            <div class="wizard-header">
+                <h2>ASSISTENTE DE CALIBRAÇÃO</h2>
+                <div class="steps-indicator">
+                    <span class="step active">1</span>
+                    <span class="step">2</span>
+                    <span class="step">3</span>
+                    <span class="step">4</span>
+                </div>
+            </div>
+            <div class="wizard-body">
+                <p id="wizard-instruction">Coloque o marcador (bolinha) sobre a cruz verde no chão.</p>
+                <div class="wizard-preview">
+                    <!-- Miniatura da câmera durante a calibração -->
+                    <img id="wizard-video" src="/video_feed" alt="Calibration Preview">
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-cancel-calib" class="btn-glass">CANCELAR</button>
+                <button id="btn-record-point" class="btn-glass primary pulse-btn">REGISTRAR PONTO</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>
