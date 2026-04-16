@@ -1,0 +1,19 @@
+{
+    "canny_threshold1": 100,
+    "canny_threshold2": 200,
+    "vector_density": 2,
+    "consistency_threshold": 100,
+    "edge_thickness": 1,
+    "contour_mode": "center",
+    "particle_size": 1,
+    "ignore_green_blue": false,
+    "use_threshold2": false,
+    "draw_mode": "lines",
+    "color_theme": "white",
+    "fade_rate": 10,
+    "hough_threshold": 10,
+    "min_line_length": 71,
+    "max_line_gap": 5,
+    "vector_color": "cyan",
+    "use_contours": true
+}

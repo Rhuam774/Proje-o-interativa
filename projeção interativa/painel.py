@@ -6,17 +6,30 @@ import threading
 import random
 import sys
 import tkinter as tk
-from tkinter import simpledialog, messagebox
+from tkinter import simpledialog, messagebox, ttk
+import json
+import os
+from effects.effect_loader import EffectLoader
 class Config:
     # ─── MUDANÇA DE CÂMERA AQUI ───
     # 0 = Câmera do notebook
     # 1, 2 = Câmera Virtual USB (ex: DroidCam, Iriun Webcam via cabo)
-    # "http://192.168.0.202:8080/video" = IP Webcam (IP Fixo Sugerido)
-    CAMERA_ID = "http://192.168.0.202:8080/video" 
+    # "http://192.168.1.105:8080/video" = IP Webcam (IP Fixo Sugerido)
+    # Configurações padrão: 240x180, equilíbrio qualidade/performance
+    # Alternativas disponíveis (descomente para usar):
+    # CAMERA_ID = "http://192.168.0.227:8080/video?resolution=640x480&quality=25&fps=8"  # 640x480 (alta qualidade)
+    # CAMERA_ID = "http://192.168.0.227:8080/video?resolution=320x240&quality=25&fps=8"  # 320x240 (média qualidade)
+    # CAMERA_ID = "http://192.168.0.227:8080/video?resolution=240x180&quality=25&fps=8"  # 240x180 (compacto)
+    CAMERA_ID = 0  # Câmera do notebook (fallback se IP não conectar)
+    # CAMERA_ID = "http://192.168.0.227:8080/video?resolution=640x480&quality=25&fps=8"  # IP Webcam 
 
+    # Configurações correspondentes (ajuste junto com CAMERA_ID acima):
+    # WIDTH = 640; HEIGHT = 480; FPS = 8  # Para 640x480
+    # WIDTH = 320; HEIGHT = 240; FPS = 8  # Para 320x240
+    # WIDTH = 240; HEIGHT = 180; FPS = 8  # Para 240x180
     WIDTH = 640
     HEIGHT = 480
-    FPS = 30 # Aumentado para 30 para fluidez e menos delay
+    FPS = 8 # Configurações para 640x480 (alta qualidade)
 
     # Cores (BGR)
     CYAN    = (220, 255, 0)
@@ -59,6 +72,18 @@ class App:
 
         # Câmera Dinâmica (Celular IP ou USB)
         if isinstance(Config.CAMERA_ID, str):
+            # Para câmeras IP, adicionar timeout e retry
+            import urllib.parse
+            parsed = urllib.parse.urlparse(Config.CAMERA_ID)
+            if parsed.hostname:
+                import socket
+                try:
+                    # Testar conexão primeiro
+                    socket.create_connection((parsed.hostname, parsed.port or 8080), timeout=3)
+                except:
+                    print(f"[Aviso] Celular ({parsed.hostname}) não conectado. Puxando Notebook...")
+                    Config.CAMERA_ID = 0
+            
             self.cap = cv2.VideoCapture(Config.CAMERA_ID) # Via IP (Wi-Fi)
         else:
             self.cap = cv2.VideoCapture(Config.CAMERA_ID, cv2.CAP_DSHOW) # Via USB/Embutida
@@ -67,6 +92,11 @@ class App:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, Config.WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, Config.HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS, Config.FPS)
+        
+        # Para câmeras IP, limpar o buffer inicial para evitar delay
+        if isinstance(Config.CAMERA_ID, str):
+            for _ in range(10):  # Limpar 10 frames iniciais
+                self.cap.read()
         
         # Ajuste FFMPEG só funciona em cameras USB/Locais, evitamos para IP para não corromper
         if not isinstance(Config.CAMERA_ID, str):
@@ -110,11 +140,41 @@ class App:
         # FPS counter
         self._fps = 0
         self._frame_times = []
+        
+        # Suavização de posição dos rastreadores (para reduzir tremor no contorno)
+        self._smoothed_positions = {}
+        # Histórico de qualidade do rastreamento (para CSRT)
+        self._tracker_quality = {}
 
         # Efeitos de Projeção
         self.active_effect = None  # Efeito imersivo desativado por padrão (ativa pelo botão)
         self._trail_canvas = None  # Canvas persistente para rastros
         self._trail_fade_rate = 3  # Desvanecimento suave do rastro cósmico
+
+        # Sistema de carregamento de efeitos
+        self.effect_loader = EffectLoader()
+        self.effect_loader.load_all_effects()
+        # Forçar recarregamento para garantir alterações mais recentes
+        self.effect_loader.reload_effects()
+        # Recarregar módulos específicos para garantir alterações
+        import importlib
+        import sys
+        for module_name in list(sys.modules.keys()):
+            if 'future' in module_name or 'colliding_balls' in module_name or 'neon_ribbon' in module_name or 'neural_network' in module_name or 'lantern_cone' in module_name or 'black_hole' in module_name or 'boat_wake' in module_name:
+                try:
+                    importlib.reload(sys.modules[module_name])
+                except:
+                    pass
+        self.effect_loader.reload_effects()
+        print(f"[Sistema] Efeitos carregados dinamicamente: {len(self.effect_loader.get_all_effects())}")
+
+        # Configurações do efeito Vetores Imersivos
+        self._vector_config = self._load_vector_config()
+        self._vector_config_panel = None  # Referência para o painel de configuração
+
+        # Buffer temporal para filtro de bordas (elimina piscamento)
+        self._edge_buffer = None  # Armazena contagem de aparições de cada pixel
+        self._edge_buffer_size = 5  # Número de frames para análise de consistência
 
         # Memória e Seleção
         self.selected_tracker = None
@@ -203,6 +263,39 @@ class App:
              else:
                  messagebox.showwarning("Câmera não encontrada", "Nenhuma câmera do notebook detectada ou conectada.\n\nVerifique permissões de Webcam.")
 
+    def _load_vector_config(self):
+        """Carrega configurações salvas do efeito Vetores Imersivos"""
+        default_config = {
+            "canny_threshold1": 20,
+            "canny_threshold2": 60,
+            "vector_density": 2,
+            "consistency_threshold": 30,  # Porcentagem de consistência (30% = aparece em 30% dos frames)
+            "edge_thickness": 1,  # Espessura dos contornos (1-5 pixels)
+            "contour_mode": "center",  # "center" = linha no meio, "lateral" = duas linhas de cada lado
+            "particle_size": 1,  # Tamanho das partículas (1-3 pixels)
+            "ignore_green_blue": False  # Projetar apenas em bordas verdes e azuis (para garantir que as cores projetadas sejam as mesmas)
+        }
+        try:
+            if os.path.exists('vector_config.json'):
+                with open('vector_config.json', 'r') as f:
+                    config = json.load(f)
+                    # Mesclar com defaults para garantir que todas as chaves existam
+                    default_config.update(config)
+                    print("[Sistema] Configurações de vetores carregadas.")
+                    return default_config
+        except Exception as e:
+            print(f"[Sistema] Erro ao carregar configurações de vetores: {e}")
+        return default_config
+
+    def _save_vector_config(self):
+        """Salva configurações do efeito Vetores Imersivos"""
+        try:
+            with open('vector_config.json', 'w') as f:
+                json.dump(self._vector_config, f, indent=4)
+            print("[Sistema] Configurações de vetores salvas.")
+        except Exception as e:
+            print(f"[Sistema] Erro ao salvar configurações de vetores: {e}")
+
     def _mouse_callback(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             mx, my = x, y
@@ -265,32 +358,20 @@ class App:
         def run_tk():
             root = tk.Toplevel(self.root)
             root.title("EFEITOS DE PROJEÇÃO")
-            root.geometry("400x900")
+            root.geometry("500x700")
             root.attributes("-topmost", True)
             root.configure(bg='#1e1e2e', padx=20, pady=20)
 
             tk.Label(root, text="✨ PAINEL DE EFEITOS", font=("Impact", 16),
-                     fg="#89b4fa", bg="#1e1e2e").pack(pady=(0, 20))
+                     fg="#89b4fa", bg="#1e1e2e").pack(pady=(0, 15))
 
-            effect_displays = {
-                "effect_plexus": "Plexus Neural",
-                "effect_grid": "Malha Gravitacional",
-                "effect_pulse": "Pulsos de Radar",
-                "effect_liquid": "Fluido Orgânico",
-                "effect_voronoi": "Estilhaços Geométricos",
-                "effect_matrix": "Data Rain",
-                "effect_hologram": "Varredura Laser",
-                "effect_fire": "Fogo Cósmico",
-                "effect_nebula": "Nebulosa Estelar",
-                "effect_plasma": "Raio Plasmático",
-                None: "Rastro Simples Seco"
-            }
             # Status atual
-            current_display = effect_displays.get(self.active_effect, "Desconhecido")
+            current_effect = self.effect_loader.get_effect(self.active_effect)
+            current_display = current_effect.name if current_effect else "Rastro Simples Seco"
             status_var = tk.StringVar(value=current_display)
             status_lbl = tk.Label(root, textvariable=status_var, font=("Consolas", 11),
                                   fg="#a6e3a1", bg="#1e1e2e")
-            status_lbl.pack(pady=(0, 15))
+            status_lbl.pack(pady=(0, 10))
 
             def set_effect(name, display):
                 self.active_effect = name
@@ -302,63 +383,103 @@ class App:
                 else:
                     status_var.set(display)
                     self.tk_btn_fx.config(text=f"EFEITOS: {display.upper()}")
+                    # Se for o efeito de vetores, abrir painel de configuração
+                    if name == "effect_vectors":
+                        self._launch_vector_config_panel()
                 print(f"[Efeitos] Ativado: {display}")
 
-            # ─── BOTÕES DE EFEITO ───
-            btn_style = {"font": ("Arial", 11, "bold"),
-                         "relief": tk.FLAT, "pady": 12, "cursor": "hand2"}
+            # ─── CRIAR ABAS (TABS) ───
+            notebook = ttk.Notebook(root)
+            notebook.pack(fill=tk.BOTH, expand=True, pady=10)
 
-            tk.Button(root, text="🕸️  TEIA PLEXUS", bg="#cba6f7", fg="white",
-                      command=lambda: set_effect("effect_plexus", "Plexus Neural"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            # Estilo das abas
+            style = ttk.Style()
+            style.theme_use('clam')
+            style.configure("TNotebook", background="#1e1e2e", borderwidth=0)
+            style.configure("TNotebook.Tab", background="#313244", foreground="#cdd6f4", 
+                           padding=[10, 5], font=("Arial", 10, "bold"))
+            style.map("TNotebook.Tab", background=[("selected", "#89b4fa")], 
+                    foreground=[("selected", "#1e1e2e")])
 
-            tk.Button(root, text="🌐  MALHA QUÂNTICA", bg="#89b4fa", fg="white",
-                      command=lambda: set_effect("effect_grid", "Malha Gravitacional"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            btn_style = {"font": ("Arial", 10, "bold"),
+                         "relief": tk.FLAT, "pady": 10, "cursor": "hand2"}
 
-            tk.Button(root, text="📡  ONDAS CINÉTICAS", bg="#f38ba8", fg="white",
-                      command=lambda: set_effect("effect_pulse", "Pulsos de Radar"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            # Cores para botões
+            button_colors = ["#cba6f7", "#89b4fa", "#f38ba8", "#89dceb", "#f9e2af", "#a6e3a1", "#94e2d5", "#f2cdcd", "#b4befe"]
+            color_index = 0
 
-            tk.Button(root, text="💧  RASTRO LÍQUIDO", bg="#89dceb", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_liquid", "Fluido Orgânico"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            # ─── ABA 1: EFEITOS SIMPLES ───
+            tab_simple = tk.Frame(notebook, bg='#1e1e2e', padx=10, pady=10)
+            notebook.add(tab_simple, text="🎨 Efeitos Simples")
 
-            tk.Button(root, text="💎  FRACTAL DE VIDRO", bg="#f9e2af", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_voronoi", "Estilhaços Geométricos"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            simple_effects = self.effect_loader.get_effects_by_category("simple")
+            if simple_effects:
+                for effect_id, effect in simple_effects.items():
+                    color = button_colors[color_index % len(button_colors)]
+                    color_index += 1
+                    tk.Button(tab_simple, text=f"🎨  {effect.name}", bg=color, fg="white",
+                              command=lambda eid=effect_id, ename=effect.name: set_effect(eid, ename),
+                              **btn_style).pack(fill=tk.X, pady=3)
+            else:
+                tk.Label(tab_simple, text="Nenhum efeito simples encontrado", fg="#6c7086", bg="#1e1e2e").pack(pady=20)
 
-            tk.Button(root, text="📟  CHUVA MATRIX", bg="#a6e3a1", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_matrix", "Data Rain"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            # ─── ABA 2: JOGOS ───
+            tab_games = tk.Frame(notebook, bg='#1e1e2e', padx=10, pady=10)
+            notebook.add(tab_games, text="🎮 Jogos")
 
-            tk.Button(root, text="🖨️  SCANNER HOLOGRÁFICO", bg="#94e2d5", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_hologram", "Varredura Laser"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            game_effects = self.effect_loader.get_effects_by_category("games")
+            if game_effects:
+                for effect_id, effect in game_effects.items():
+                    color = button_colors[color_index % len(button_colors)]
+                    color_index += 1
+                    tk.Button(tab_games, text=f"🎮  {effect.name}", bg=color, fg="white",
+                              command=lambda eid=effect_id, ename=effect.name: set_effect(eid, ename),
+                              **btn_style).pack(fill=tk.X, pady=3)
+            else:
+                tk.Label(tab_games, text="Nenhum jogo encontrado", fg="#6c7086", bg="#1e1e2e").pack(pady=20)
 
-            tk.Button(root, text="🔥  FOGO CÓSMICO", bg="#f38ba8", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_fire", "Chamas Quânticas"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            # ─── ABA 3: VISUALIZAÇÕES IMERSIVAS ───
+            tab_immersive = tk.Frame(notebook, bg='#1e1e2e', padx=10, pady=10)
+            notebook.add(tab_immersive, text="🌟 Visualizações Imersivas")
 
-            tk.Button(root, text="🌌  NEBULOSA ESTELAR", bg="#cba6f7", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_nebula", "Poeira Cósmica"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            immersive_effects = self.effect_loader.get_effects_by_category("immersive")
+            if immersive_effects:
+                for effect_id, effect in immersive_effects.items():
+                    color = button_colors[color_index % len(button_colors)]
+                    color_index += 1
+                    tk.Button(tab_immersive, text=f"🌟  {effect.name}", bg=color, fg="white",
+                              command=lambda eid=effect_id, ename=effect.name: set_effect(eid, ename),
+                              **btn_style).pack(fill=tk.X, pady=3)
+                    
+                    # Adicionar botão de configuração para efeito vectors
+                    if effect_id == "effect_vectors":
+                        tk.Button(tab_immersive, text="⚙️  Configurar Vetores", bg="#45475a", fg="white",
+                                  command=lambda: self._launch_vector_config_panel(),
+                                  **btn_style).pack(fill=tk.X, pady=3)
+            else:
+                tk.Label(tab_immersive, text="Nenhuma visualização imersiva encontrada", fg="#6c7086", bg="#1e1e2e").pack(pady=20)
 
-            tk.Button(root, text="⚡  RAIO PLASMÁTICO", bg="#f9e2af", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_plasma", "Energia Pura"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            # ─── ABA 4: FUTUROS EFEITOS ───
+            tab_future = tk.Frame(notebook, bg='#1e1e2e', padx=10, pady=10)
+            notebook.add(tab_future, text="🚀 Futuros Efeitos")
 
-            tk.Button(root, text="🕷️  ATAQUE DE INSETOS (JOGO)", bg="#f2cdcd", fg="#1e1e2e",
-                      command=lambda: set_effect("effect_insects", "Sobrevivência"),
-                      **btn_style).pack(fill=tk.X, pady=5)
+            future_effects = self.effect_loader.get_effects_by_category("future")
+            if future_effects:
+                for effect_id, effect in future_effects.items():
+                    color = button_colors[color_index % len(button_colors)]
+                    color_index += 1
+                    tk.Button(tab_future, text=f"🚀  {effect.name}", bg=color, fg="white",
+                              command=lambda eid=effect_id, ename=effect.name: set_effect(eid, ename),
+                              **btn_style).pack(fill=tk.X, pady=3)
+            else:
+                tk.Label(tab_future, text="Nenhum efeito futuro encontrado", fg="#6c7086", bg="#1e1e2e").pack(pady=20)
 
-            tk.Button(root, text="🚫  DESATIVAR EFEITOS", bg="#585b70",
+            # ─── BOTÃO DESATIVAR ───
+            tk.Button(root, text="🚫  DESATIVAR EFEITOS", bg="#585b70", fg="white",
                       command=lambda: set_effect(None, "Rastro Simples Seco"),
-                      **btn_style).pack(fill=tk.X, pady=15)
+                      font=("Arial", 11, "bold"), relief=tk.FLAT, pady=10, cursor="hand2").pack(fill=tk.X, pady=10)
 
             # ─── CONTROLES DO RASTRO ───
-            tk.Label(root, text="", bg="#1e1e2e").pack(pady=5)  # Spacer
-
             ctrl_frame = tk.LabelFrame(root, text="Controles do Rastro", font=("Arial", 10, "bold"),
                                        fg="#cdd6f4", bg="#1e1e2e", padx=15, pady=15)
             ctrl_frame.pack(fill=tk.X, pady=10)
@@ -390,6 +511,214 @@ class App:
             tk.Button(ctrl_frame, text="🗑️  LIMPAR RASTROS DA TELA", bg="#f38ba8",
                       fg="white", font=("Arial", 10, "bold"), relief=tk.FLAT,
                       command=clear_trail, cursor="hand2").pack(fill=tk.X, pady=(15, 5))
+
+        run_tk()
+
+    def _launch_vector_config_panel(self):
+        """Abre painel de configuração específico para o efeito Vetores Imersivos"""
+        def run_tk():
+            root = tk.Toplevel(self.root)
+            root.title("⚙️ CONFIGURAÇÃO - VETORES IMERSIVOS 1")
+            root.geometry("450x650")
+            root.attributes("-topmost", True)
+            root.configure(bg='#1e1e2e', padx=25, pady=25)
+
+            tk.Label(root, text="🔮 VETORES IMERSIVOS 1", font=("Impact", 16),
+                     fg="#b4befe", bg="#1e1e2e").pack(pady=(0, 20))
+
+            # Frame principal de configurações
+            config_frame = tk.LabelFrame(root, text="Parâmetros de Detecção", 
+                                        font=("Arial", 11, "bold"),
+                                        fg="#cdd6f4", bg="#1e1e2e", padx=15, pady=15)
+            config_frame.pack(fill=tk.X, pady=10)
+
+            # Slider: Canny Threshold 1
+            tk.Label(config_frame, text="Sensibilidade de Borda (Canny Threshold 1):", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(5, 0))
+            
+            canny1_var = tk.IntVar(value=self._vector_config["canny_threshold1"])
+            
+            def on_canny1_change(val):
+                self._vector_config["canny_threshold1"] = int(val)
+                self._save_vector_config()
+            
+            canny1_slider = tk.Scale(config_frame, from_=5, to=100, orient=tk.HORIZONTAL,
+                                    variable=canny1_var, command=on_canny1_change,
+                                    bg="#1e1e2e", fg="#cdd6f4", troughcolor="#313244",
+                                    highlightthickness=0, font=("Arial", 9))
+            canny1_slider.pack(fill=tk.X, pady=5)
+            tk.Label(config_frame, text="Menor = mais sensível | Maior = menos sensível",
+                     fg="#6c7086", bg="#1e1e2e", font=("Arial", 8)).pack(anchor=tk.W)
+
+            # Slider: Canny Threshold 2
+            tk.Label(config_frame, text="Sensibilidade de Borda (Canny Threshold 2):", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(15, 0))
+            
+            canny2_var = tk.IntVar(value=self._vector_config["canny_threshold2"])
+            
+            def on_canny2_change(val):
+                self._vector_config["canny_threshold2"] = int(val)
+                self._save_vector_config()
+            
+            canny2_slider = tk.Scale(config_frame, from_=20, to=200, orient=tk.HORIZONTAL,
+                                    variable=canny2_var, command=on_canny2_change,
+                                    bg="#1e1e2e", fg="#cdd6f4", troughcolor="#313244",
+                                    highlightthickness=0, font=("Arial", 9))
+            canny2_slider.pack(fill=tk.X, pady=5)
+            tk.Label(config_frame, text="Menor = mais bordas | Maior = menos bordas",
+                     fg="#6c7086", bg="#1e1e2e", font=("Arial", 8)).pack(anchor=tk.W)
+
+            # Slider: Densidade de Vetores
+            tk.Label(config_frame, text="Densidade de Vetores (Amostragem):", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(15, 0))
+            
+            density_var = tk.IntVar(value=self._vector_config["vector_density"])
+            
+            def on_density_change(val):
+                self._vector_config["vector_density"] = int(val)
+                self._save_vector_config()
+            
+            density_slider = tk.Scale(config_frame, from_=1, to=10, orient=tk.HORIZONTAL,
+                                     variable=density_var, command=on_density_change,
+                                     bg="#1e1e2e", fg="#cdd6f4", troughcolor="#313244",
+                                     highlightthickness=0, font=("Arial", 9))
+            density_slider.pack(fill=tk.X, pady=5)
+            tk.Label(config_frame, text="Menor = mais detalhado | Maior = mais suave",
+                     fg="#6c7086", bg="#1e1e2e", font=("Arial", 8)).pack(anchor=tk.W)
+
+            # Slider: Consistência (Filtro Anti-Piscamento)
+            tk.Label(config_frame, text="Consistência (Filtro Anti-Piscamento):", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(15, 0))
+            
+            consistency_var = tk.IntVar(value=self._vector_config.get("consistency_threshold", 30))
+            
+            def on_consistency_change(val):
+                self._vector_config["consistency_threshold"] = int(val)
+                self._save_vector_config()
+            
+            consistency_slider = tk.Scale(config_frame, from_=20, to=100, orient=tk.HORIZONTAL,
+                                           variable=consistency_var, command=on_consistency_change,
+                                           bg="#1e1e2e", fg="#cdd6f4", troughcolor="#313244",
+                                           highlightthickness=0, font=("Arial", 9))
+            consistency_slider.pack(fill=tk.X, pady=5)
+            tk.Label(config_frame, text="Menor = mais sensível | Maior = mais estável (filtra piscamento)",
+                     fg="#6c7086", bg="#1e1e2e", font=("Arial", 8)).pack(anchor=tk.W)
+
+            # Slider: Espessura dos Contornos
+            tk.Label(config_frame, text="Espessura dos Contornos:", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(15, 0))
+            
+            thickness_var = tk.IntVar(value=self._vector_config.get("edge_thickness", 1))
+            
+            def on_thickness_change(val):
+                self._vector_config["edge_thickness"] = int(val)
+                self._save_vector_config()
+            
+            thickness_slider = tk.Scale(config_frame, from_=1, to=5, orient=tk.HORIZONTAL,
+                                        variable=thickness_var, command=on_thickness_change,
+                                        bg="#1e1e2e", fg="#cdd6f4", troughcolor="#313244",
+                                        highlightthickness=0, font=("Arial", 9))
+            thickness_slider.pack(fill=tk.X, pady=5)
+            tk.Label(config_frame, text="1 = fino | 5 = grosso",
+                     fg="#6c7086", bg="#1e1e2e", font=("Arial", 8)).pack(anchor=tk.W)
+
+            # Slider: Tamanho das Partículas
+            tk.Label(config_frame, text="Tamanho das Partículas:", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(15, 0))
+            
+            particle_var = tk.IntVar(value=self._vector_config.get("particle_size", 1))
+            
+            def on_particle_change(val):
+                self._vector_config["particle_size"] = int(val)
+                self._save_vector_config()
+            
+            particle_slider = tk.Scale(config_frame, from_=1, to=3, orient=tk.HORIZONTAL,
+                                      variable=particle_var, command=on_particle_change,
+                                      bg="#1e1e2e", fg="#cdd6f4", troughcolor="#313244",
+                                      highlightthickness=0, font=("Arial", 9))
+            particle_slider.pack(fill=tk.X, pady=5)
+            tk.Label(config_frame, text="1 = pequeno | 3 = grande",
+                     fg="#6c7086", bg="#1e1e2e", font=("Arial", 8)).pack(anchor=tk.W)
+
+            # Checkbox: Modo de Contorno
+            tk.Label(config_frame, text="Modo de Contorno:", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(15, 0))
+            
+            contour_mode_var = tk.StringVar(value=self._vector_config.get("contour_mode", "center"))
+            
+            def on_contour_mode_change(val):
+                self._vector_config["contour_mode"] = val
+                self._save_vector_config()
+            
+            contour_frame = tk.Frame(config_frame, bg="#1e1e2e")
+            contour_frame.pack(fill=tk.X, pady=5)
+            
+            tk.Radiobutton(contour_frame, text="Central (linha no meio)", variable=contour_mode_var, 
+                          value="center", command=lambda: on_contour_mode_change("center"),
+                          bg="#1e1e2e", fg="#cdd6f4", selectcolor="#313244",
+                          activebackground="#1e1e2e", activeforeground="#cdd6f4",
+                          font=("Arial", 9)).pack(anchor=tk.W)
+            tk.Radiobutton(contour_frame, text="Lateral (duas linhas dos lados)", variable=contour_mode_var, 
+                          value="lateral", command=lambda: on_contour_mode_change("lateral"),
+                          bg="#1e1e2e", fg="#cdd6f4", selectcolor="#313244",
+                          activebackground="#1e1e2e", activeforeground="#cdd6f4",
+                          font=("Arial", 9)).pack(anchor=tk.W)
+
+            # Checkbox: Projetar Apenas em Cores Verde e Azul
+            tk.Label(config_frame, text="Filtro de Cores:", 
+                     fg="#bac2de", bg="#1e1e2e", font=("Arial", 9)).pack(anchor=tk.W, pady=(15, 0))
+            
+            ignore_color_var = tk.BooleanVar(value=self._vector_config.get("ignore_green_blue", False))
+            
+            def on_ignore_color_change():
+                self._vector_config["ignore_green_blue"] = ignore_color_var.get()
+                self._save_vector_config()
+            
+            tk.Checkbutton(config_frame, text="Projetar apenas em bordas verdes e azuis",
+                         variable=ignore_color_var, command=on_ignore_color_change,
+                         bg="#1e1e2e", fg="#cdd6f4", selectcolor="#313244",
+                         activebackground="#1e1e2e", activeforeground="#cdd6f4",
+                         font=("Arial", 9)).pack(anchor=tk.W, pady=5)
+            tk.Label(config_frame, text="Garante que as cores projetadas sejam as mesmas ignoradas",
+                     fg="#6c7086", bg="#1e1e2e", font=("Arial", 8)).pack(anchor=tk.W)
+
+            # Botão de reset
+            def reset_config():
+                self._vector_config = {
+                    "canny_threshold1": 20,
+                    "canny_threshold2": 60,
+                    "vector_density": 2,
+                    "consistency_threshold": 30,
+                    "edge_thickness": 1,
+                    "contour_mode": "center",
+                    "particle_size": 1,
+                    "ignore_green_blue": False
+                }
+                self._save_vector_config()
+                # Atualizar sliders
+                canny1_var.set(self._vector_config["canny_threshold1"])
+                canny2_var.set(self._vector_config["canny_threshold2"])
+                density_var.set(self._vector_config["vector_density"])
+                consistency_var.set(self._vector_config["consistency_threshold"])
+                thickness_var.set(self._vector_config["edge_thickness"])
+                particle_var.set(self._vector_config["particle_size"])
+                contour_mode_var.set(self._vector_config["contour_mode"])
+                ignore_color_var.set(self._vector_config["ignore_green_blue"])
+                messagebox.showinfo("Reset", "Configurações restauradas para os valores padrão.", parent=root)
+
+            tk.Button(root, text="🔄 RESTAURAR PADRÕES", bg="#f38ba8", fg="white",
+                      font=("Arial", 10, "bold"), relief=tk.FLAT,
+                      command=reset_config, cursor="hand2").pack(fill=tk.X, pady=(15, 5))
+
+            # Informações
+            info_frame = tk.LabelFrame(root, text="ℹ️ Informações", 
+                                      font=("Arial", 10, "bold"),
+                                      fg="#cdd6f4", bg="#1e1e2e", padx=15, pady=10)
+            info_frame.pack(fill=tk.X, pady=10)
+            
+            info_text = "Este efeito detecta bordas do vídeo em\ntempo real usando detecção de bordas Canny.\n\nFiltro Anti-Piscamento: Elimina traços\nque aparecem e desaparecem rapidamente.\nAumente a consistência para mais estabilidade.\n\nAs configurações são salvas automaticamente\nno arquivo vector_config.json"
+            tk.Label(info_frame, text=info_text, fg="#bac2de", bg="#1e1e2e",
+                    font=("Arial", 9), justify=tk.LEFT).pack(anchor=tk.W)
 
         run_tk()
 
@@ -489,6 +818,45 @@ class App:
                 success, box = data["tracker"].update(frame)
                 if success:
                     x, y, w, h = [int(v) for v in box]
+                    
+                    # Verificar qualidade do rastreamento (filtro de estabilidade)
+                    if tid not in self._tracker_quality:
+                        self._tracker_quality[tid] = []
+                    self._tracker_quality[tid].append((x, y, w, h))
+                    
+                    # Manter apenas últimos 10 frames
+                    if len(self._tracker_quality[tid]) > 10:
+                        self._tracker_quality[tid].pop(0)
+                    
+                    # Calcular variação da posição (oscilação)
+                    if len(self._tracker_quality[tid]) >= 3:
+                        recent = self._tracker_quality[tid][-3:]
+                        # Calcular desvio padrão da posição
+                        xs = [p[0] for p in recent]
+                        ys = [p[1] for p in recent]
+                        ws = [p[2] for p in recent]
+                        hs = [p[3] for p in recent]
+                        
+                        std_x = np.std(xs) if len(xs) > 1 else 0
+                        std_y = np.std(ys) if len(ys) > 1 else 0
+                        std_w = np.std(ws) if len(ws) > 1 else 0
+                        std_h = np.std(hs) if len(hs) > 1 else 0
+                        
+                        # Se oscilação for muito alta, usar média dos últimos frames
+                        if std_x > 15 or std_y > 15 or std_w > 10 or std_h > 10:
+                            x = int(np.mean(xs))
+                            y = int(np.mean(ys))
+                            w = int(np.mean(ws))
+                            h = int(np.mean(hs))
+                    
+                    # Verificar se o tamanho mudou drasticamente (indica instabilidade)
+                    prev_box = data["last_box"]
+                    size_change = abs(w - prev_box[2]) + abs(h - prev_box[3])
+                    if size_change > 50:  # Mudança muito drástica
+                        # Usar tamanho suavizado
+                        w = int((w + prev_box[2]) / 2)
+                        h = int((h + prev_box[3]) / 2)
+                    
                     data["last_box"] = (x, y, w, h)
                     dets.append({"id": tid, "box": (x, y, w, h), "label": data["label"],
                                  "color": data["color"], "type": data.get("type", "manual")})
@@ -496,6 +864,9 @@ class App:
                     if self.selected_tracker == tid:
                         self.selected_tracker = None
                     to_remove.append(tid)
+                    # Limpar histórico de qualidade
+                    if tid in self._tracker_quality:
+                        del self._tracker_quality[tid]
             for tid in to_remove:
                 del self.trackers[tid]
         return dets
@@ -924,17 +1295,27 @@ class App:
                 continue
 
             try:
-                results = self.yolo_model(frame, verbose=False, imgsz=320)
+                # Aumentar confiança e adicionar NMS mais agressivo
+                results = self.yolo_model(frame, verbose=False, imgsz=320, conf=0.5, iou=0.4)
                 
                 # Caixas puras do YOLO
                 yolo_boxes = []
+                # Classes relevantes para rastreamento (reduzir falsos positivos)
+                relevant_classes = {'person', 'hand', 'cell phone', 'bottle', 'cup', 'laptop', 'book'}
+                
                 for r in results:
                     for box in r.boxes:
                         conf = float(box.conf[0])
-                        if conf > 0.25:  # Baixado de 0.4 para 0.25 para pegar movimentos borrados
-                            cls = int(box.cls[0])
-                            label = self.yolo_model.names[cls]
-                            b = box.xywh[0].cpu().numpy()
+                        cls = int(box.cls[0])
+                        label = self.yolo_model.names[cls]
+                        
+                        # Filtrar apenas classes relevantes
+                        if label not in relevant_classes:
+                            continue
+                            
+                        b = box.xywh[0].cpu().numpy()
+                        # Aumentar tamanho mínimo para reduzir falsos positivos pequenos
+                        if int(b[2]) >= 30 and int(b[3]) >= 30:
                             yolo_boxes.append({
                                 "x": int(b[0] - b[2]/2), "y": int(b[1] - b[3]/2),
                                 "w": int(b[2]), "h": int(b[3]),
@@ -979,7 +1360,7 @@ class App:
                     # 4. Criar rastreadores novos com NMS nativo interno
                     valid_spawns = []
                     for yb in yolo_boxes:
-                        if not yb["matched"] and yb["w"] >= 20 and yb["h"] >= 20: 
+                        if not yb["matched"] and yb["w"] >= 30 and yb["h"] >= 30: 
                             ycx, ycy = yb["x"] + yb["w"]//2, yb["y"] + yb["h"]//2
                             is_dup = False
                             for vs in valid_spawns:
@@ -1005,6 +1386,24 @@ class App:
             x, y, w, h = d["box"]
             c = d["color"]
             tid = d.get("id")
+            
+            # Aplicar suavização à posição do rastreador (amortecer tremor)
+            if tid is not None:
+                if tid not in self._smoothed_positions:
+                    self._smoothed_positions[tid] = {'x': x, 'y': y, 'w': w, 'h': h}
+                else:
+                    # Suavização exponencial mais agressiva (10% nova posição, 90% antiga)
+                    smoothing_factor = 0.1
+                    self._smoothed_positions[tid]['x'] = x * smoothing_factor + self._smoothed_positions[tid]['x'] * (1 - smoothing_factor)
+                    self._smoothed_positions[tid]['y'] = y * smoothing_factor + self._smoothed_positions[tid]['y'] * (1 - smoothing_factor)
+                    self._smoothed_positions[tid]['w'] = w * smoothing_factor + self._smoothed_positions[tid]['w'] * (1 - smoothing_factor)
+                    self._smoothed_positions[tid]['h'] = h * smoothing_factor + self._smoothed_positions[tid]['h'] * (1 - smoothing_factor)
+                
+                # Usar posição suavizada para desenhar
+                x = int(self._smoothed_positions[tid]['x'])
+                y = int(self._smoothed_positions[tid]['y'])
+                w = int(self._smoothed_positions[tid]['w'])
+                h = int(self._smoothed_positions[tid]['h'])
             
             drawn_shape = False
             
@@ -1060,8 +1459,8 @@ class App:
                         cx = int(rect[0][0])
                         cy = int(rect[0][1])
                         
-                        cv2.putText(frame, d["label"], (x, max(20, int(top_y) - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 2)
-                        cv2.drawMarker(frame, (cx, cy), c, cv2.MARKER_CROSS, 12, 1)
+                        cv2.putText(frame, d["label"], (x, max(20, int(top_y) - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, c, 1)
+                        cv2.drawMarker(frame, (cx, cy), c, cv2.MARKER_CROSS, 8, 1)
                         
                         d["true_cx"] = cx
                         d["true_cy"] = cy
@@ -1069,38 +1468,38 @@ class App:
 
             if not drawn_shape:
                 if tid is not None and tid == self.selected_tracker:
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), Config.WHITE, 4)
-                    cv2.rectangle(frame, (x-2, y-2), (x+w+2, y+h+2), Config.DARK, 1)
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), Config.WHITE, 1)
+                    cv2.rectangle(frame, (x-1, y-1), (x+w+1, y+h+1), Config.DARK, 1)
 
-                cv2.rectangle(frame, (x, y), (x + w, y + h), c, 2)
-                cv2.putText(frame, d["label"], (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 2)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), c, 1)
+                cv2.putText(frame, d["label"], (x, y - 3), cv2.FONT_HERSHEY_PLAIN, 0.6, c, 1)
                 cx, cy = x + w // 2, y + h // 2
-                cv2.drawMarker(frame, (cx, cy), c, cv2.MARKER_CROSS, 12, 1)
+                cv2.drawMarker(frame, (cx, cy), c, cv2.MARKER_CROSS, 5, 1)
                 d["true_cx"] = cx
                 d["true_cy"] = cy
 
     def _draw_hud(self, frame):
         # FPS
         fps_text = f"FPS: {self._fps:.0f}"
-        cv2.putText(frame, fps_text, (Config.WIDTH - 85, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, Config.GREEN, 1, cv2.LINE_AA)
+        cv2.putText(frame, fps_text, (Config.WIDTH - 45, 10),
+                    cv2.FONT_HERSHEY_PLAIN, 0.8, Config.GREEN, 1)
 
         # Contagem de rastreadores
         count = len(self.trackers)
         if count > 0:
-            cv2.putText(frame, f"Rastreando: {count}", (10, Config.HEIGHT - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, Config.CYAN, 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Rastreando: {count}", (4, Config.HEIGHT - 6),
+                        cv2.FONT_HERSHEY_PLAIN, 0.8, Config.CYAN, 1)
 
         # Instrução de uso
         if count == 0 and not self.calibrating:
             msg = "Clique e arraste para rastrear um objeto"
-            (tw, _), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            cv2.putText(frame, msg, ((Config.WIDTH - tw) // 2, Config.HEIGHT - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1, cv2.LINE_AA)
+            (tw, _), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_PLAIN, 0.8, 1)
+            cv2.putText(frame, msg, ((Config.WIDTH - tw) // 2, Config.HEIGHT - 6),
+                        cv2.FONT_HERSHEY_PLAIN, 0.8, (150, 150, 150), 1)
 
     def _draw_roi_selection(self, frame):
         if self.selecting_roi and self.roi_start and self.roi_end:
-            cv2.rectangle(frame, self.roi_start, self.roi_end, Config.CYAN, 2)
+            cv2.rectangle(frame, self.roi_start, self.roi_end, Config.CYAN, 1)
 
     def _draw_calibration(self, monitor_frame, projector_frame):
         if not self.calibrating:
@@ -1199,6 +1598,7 @@ class App:
                 self.root.update()
             except: pass
 
+            # MODO SIMPLES: apenas ler frame (sem overhead de buffer clearing)
             ret, frame = self.cap.read()
             if not ret:
                 self._cam_fail_count = getattr(self, '_cam_fail_count', 0) + 1
@@ -1264,6 +1664,30 @@ class App:
             self._draw_calibration(monitor_frame, projector_frame)
             self._draw_hud(monitor_frame)
 
+            # ─── EFEITOS MODULARIZADOS ───
+            if self.active_effect:
+                # Inicializar canvas se necessário
+                if self._trail_canvas is None:
+                    self._trail_canvas = np.zeros((480, 640, 3), dtype=np.uint8)
+                if getattr(self, '_cam_trail_canvas', None) is None:
+                    self._cam_trail_canvas = np.zeros((480, 640, 3), dtype=np.uint8)
+
+            # ─── EFEITO VECTORS (processa frame inteiro, fora do loop de detecções) ───
+            if self.active_effect == "effect_vectors":
+                effect = self.effect_loader.get_effect(self.active_effect)
+                if effect:
+                    effect.apply(
+                        frame=self._clean_frame,
+                        trail_canvas=self._trail_canvas,
+                        cam_trail_canvas=self._cam_trail_canvas,
+                        H=self._H,
+                        yolo_enabled=self.yolo_enabled,
+                        trackers=self.trackers,
+                        trackers_lock=self._trackers_lock,
+                        detection_data={},
+                        config=self._vector_config
+                    )
+
             # ─── Projetar Interatividade (EFEITOS) ───
             for d in all_dets:
                  tid = d["id"]
@@ -1272,7 +1696,7 @@ class App:
                  cy = d.get("true_cy", y + h // 2)
                  
                  # Registrar histórico para rastro (sem limite quando efeito ativo)
-                 is_effect_active = self.active_effect in ["effect_plexus", "effect_grid", "effect_pulse", "effect_liquid", "effect_voronoi", "effect_matrix", "effect_hologram", "effect_fire", "effect_nebula", "effect_plasma", "effect_insects"]
+                 is_effect_active = self.active_effect in ["effect_plexus", "effect_grid", "effect_pulse", "effect_liquid", "effect_voronoi", "effect_matrix", "effect_hologram", "effect_fire", "effect_nebula", "effect_plasma", "effect_insects", "effect_vectors", "effect_colliding_balls", "effect_neon_ribbon", "effect_neural_network", "effect_lantern_cone", "effect_black_hole", "effect_boat_wake"]
                  max_hist = 500 if is_effect_active else 40
                  with self._trackers_lock:
                      if tid in self.trackers:
@@ -1286,8 +1710,24 @@ class App:
                           if tid not in self.trackers:
                               continue
                           hist = list(self.trackers[tid].get("history", []))
-                      
+                       
                       if is_effect_active and len(hist) >= 2:
+                          # ─── EFEITOS FUTURE (Modularizados) ───
+                          if self.active_effect in ["effect_colliding_balls", "effect_neon_ribbon", "effect_neural_network", "effect_lantern_cone", "effect_black_hole", "effect_boat_wake"]:
+                              effect = self.effect_loader.get_effect(self.active_effect)
+                              if effect:
+                                  config = self._vector_config if self.active_effect == "effect_vectors" else {}
+                                  effect.apply(
+                                      frame=self._clean_frame,
+                                      trail_canvas=self._trail_canvas,
+                                      cam_trail_canvas=self._cam_trail_canvas,
+                                      H=self._H,
+                                      yolo_enabled=self.yolo_enabled,
+                                      trackers=self.trackers,
+                                      trackers_lock=self._trackers_lock,
+                                      detection_data=d,
+                                      config=config
+                                  )
                           # ─── EFEITOS ESPECIAIS ───
                           # Inicializar canvas persistente se necessário
                           if self._trail_canvas is None:
@@ -1568,7 +2008,7 @@ class App:
                                           
                                           pt_ant_p = (px, py)
                                           pt_ant_c = (cpx, cpy)
-                                          
+
                       elif len(hist) >= 2:
                           # ─── Modo padrão (sem efeito): rastro temporário fino ───
                           pts_list = [(h[0], h[1]) for h in hist]

@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>6 Efeitos Imersivos de Mouse</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            cursor: crosshair;
+        }
+
+        /* Interface de Navegação */
+        #ui {
+            position: absolute;
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
+            background: rgba(10, 10, 10, 0.85);
+            padding: 10px 20px;
+            border-radius: 30px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            width: 90%;
+            max-width: 850px;
+        }
+
+        button {
+            padding: 8px 14px;
+            background: transparent;
+            color: #777;
+            border: 1px solid transparent;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            font-size: 13px;
+        }
+
+        button:hover {
+            color: #ccc;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        button.active {
+            background: #fff;
+            color: #000;
+            border-color: #fff;
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.6);
+        }
+
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <button id="btn1" onclick="setEffect(1)" class="active">1. Bolinhas Colidindo</button>
+        <button id="btn2" onclick="setEffect(2)">2. Fita Neon Profissional</button>
+        <button id="btn3" onclick="setEffect(3)">3. Rede Neural</button>
+        <button id="btn4" onclick="setEffect(4)">4. Lamparina e Cone</button>
+        <button id="btn5" onclick="setEffect(5)">5. Buraco Negro</button>
+        <button id="btn6" onclick="setEffect(6)">6. Rastro de Barco</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+
+        let currentEffect = 1;
+        let particles = [];
+        let ripples =[]; // Nodos do Rastro de Barco
+        
+        // Rastreamento e Rotação Suave do Mouse
+        const mouse = { 
+            x: -1000, y: -1000, 
+            vx: 0, vy: 0, 
+            px: -1000, py: -1000,
+            angle: 0, targetAngle: 0
+        };
+
+        const gameProps = { charge: 100, batteries: 0, pickups: [], dust:[] };
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            setEffect(currentEffect);
+        }
+        window.addEventListener('resize', resize);
+        
+        window.addEventListener('mousemove', e => {
+            mouse.px = mouse.x;
+            mouse.py = mouse.y;
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+            mouse.vx = mouse.x - mouse.px;
+            mouse.vy = mouse.y - mouse.py;
+
+            if (Math.hypot(mouse.vx, mouse.vy) > 1) {
+                mouse.targetAngle = Math.atan2(mouse.vy, mouse.vx);
+            }
+        });
+
+        // Resolve a transição de giro (ex: evitar giros bizarros de 360º) e amacia o movimento
+        function updateMouseAngle() {
+            let diff = mouse.targetAngle - mouse.angle;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            mouse.angle += diff * 0.2; 
+        }
+
+        function setEffect(num) {
+            currentEffect = num;
+            particles = [];
+            ripples =[];
+            
+            for(let i=1; i<=6; i++) document.getElementById('btn'+i).classList.remove('active');
+            document.getElementById('btn'+num).classList.add('active');
+
+            if (num === 2) { 
+                for (let i = 0; i < 60; i++) particles.push({ x: width/2, y: height/2 });
+            } 
+            else if (num === 3) { 
+                for (let i = 0; i < 300; i++) particles.push({ x: Math.random() * width, y: Math.random() * height, vx: (Math.random() - 0.5) * 1.5, vy: (Math.random() - 0.5) * 1.5 });
+            }
+            else if (num === 4) { 
+                gameProps.charge = 100; gameProps.batteries = 0; gameProps.pickups = []; gameProps.dust =[];
+                for(let i = 0; i < 300; i++) gameProps.dust.push({ x: Math.random() * width, y: Math.random() * height, vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3, size: Math.random() * 1.2 + 0.3 });
+            }
+            else if (num === 5) { 
+                for (let i = 0; i < 600; i++) particles.push({ angle: Math.random() * Math.PI * 2, radius: Math.random() * (width + height)/2, speed: Math.random() * 0.02 + 0.005, size: Math.random() * 1.5 + 0.5 });
+            }
+        }
+
+        // ==========================================
+        // EFEITO 1: Bolinhas Colidindo (Física)
+        // ==========================================
+        function drawEffect1() {
+            if (Math.hypot(mouse.vx, mouse.vy) > 2) {
+                particles.push({
+                    x: mouse.x, y: mouse.y, vx: mouse.vx * 0.15 + (Math.random() - 0.5) * 4, vy: mouse.vy * 0.15 + (Math.random() - 0.5) * 2,
+                    life: 300, hue: Math.random() * 360, size: Math.random() * 5 + 4 
+                });
+                if (particles.length > 80) particles.shift(); // Evita travamentos por excesso
+            }
+
+            // Física Básica
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.vy += 0.4; p.x += p.vx; p.y += p.vy;
+
+                if (p.x < p.size) { p.x = p.size; p.vx *= -0.8; }
+                if (p.x > width - p.size) { p.x = width - p.size; p.vx *= -0.8; }
+                if (p.y > height - p.size) { p.y = height - p.size; p.vy *= -0.7; p.vx *= 0.95; }
+                if (p.y < p.size) { p.y = p.size; p.vy *= -0.8; }
+
+                p.life -= 1;
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+
+            // Física de Colisão Entre Bolinhas
+            for (let i = 0; i < particles.length; i++) {
+                for (let j = i + 1; j < particles.length; j++) {
+                    let p1 = particles[i], p2 = particles[j];
+                    let dx = p2.x - p1.x, dy = p2.y - p1.y;
+                    let dist = Math.hypot(dx, dy);
+                    let minDist = p1.size + p2.size;
+
+                    if (dist < minDist && dist > 0) {
+                        let overlap = minDist - dist;
+                        let nx = dx / dist, ny = dy / dist;
+                        
+                        // Impede que entrem uma na outra
+                        p1.x -= nx * overlap * 0.5; p1.y -= ny * overlap * 0.5;
+                        p2.x += nx * overlap * 0.5; p2.y += ny * overlap * 0.5;
+
+                        // Quique Transferindo Energia
+                        let kx = p1.vx - p2.vx, ky = p1.vy - p2.vy;
+                        let p = 2 * (nx * kx + ny * ky) / 2; 
+                        
+                        if (p > 0) {
+                            p1.vx -= p * nx * 0.8; p1.vy -= p * ny * 0.8;
+                            p2.vx += p * nx * 0.8; p2.vy += p * ny * 0.8;
+                        }
+                    }
+                }
+            }
+
+            // Render
+            for (let p of particles) {
+                ctx.globalAlpha = Math.min(1, p.life / 30);
+                ctx.fillStyle = `hsl(${p.hue}, 90%, 50%)`;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                ctx.beginPath(); ctx.arc(p.x - p.size*0.3, p.y - p.size*0.3, p.size * 0.25, 0, Math.PI * 2); ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        // ==========================================
+        // EFEITO 2: Fita Neon Profissional
+        // ==========================================
+        function drawEffect2() {
+            if (particles.length === 0) return;
+            
+            particles[0].x += (mouse.x - particles[0].x) * 0.4;
+            particles[0].y += (mouse.y - particles[0].y) * 0.4;
+            for (let i = 1; i < particles.length; i++) {
+                particles[i].x += (particles[i-1].x - particles[i].x) * 0.4;
+                particles[i].y += (particles[i-1].y - particles[i].y) * 0.4;
+            }
+
+            ctx.beginPath(); ctx.moveTo(particles[0].x, particles[0].y);
+            for (let i = 1; i < particles.length - 1; i++) {
+                let xc = (particles[i].x + particles[i+1].x) / 2;
+                let yc = (particles[i].y + particles[i+1].y) / 2;
+                ctx.quadraticCurveTo(particles[i].x, particles[i].y, xc, yc);
+            }
+            ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+            ctx.lineWidth = 14; ctx.strokeStyle = `hsl(${(Date.now() / 10) % 360}, 100%, 60%)`;
+            ctx.shadowBlur = 20; ctx.shadowColor = ctx.strokeStyle; ctx.stroke();
+            ctx.lineWidth = 4; ctx.strokeStyle = '#ffffff'; ctx.shadowBlur = 0; ctx.stroke();
+        }
+
+        // ==========================================
+        // EFEITO 3: Rede Neural
+        // ==========================================
+        function drawEffect3() {
+            ctx.lineWidth = 0.5;
+            particles.forEach(p => {
+                let dist = Math.hypot(p.x - mouse.x, p.y - mouse.y);
+                if (dist < 100) { let force = (100 - dist) / 100; p.vx += ((p.x - mouse.x) / dist) * force * 0.5; p.vy += ((p.y - mouse.y) / dist) * force * 0.5; }
+                p.vx *= 0.95; p.vy *= 0.95; p.x += p.vx + (Math.random()-0.5)*0.5; p.y += p.vy + (Math.random()-0.5)*0.5;
+                if (p.x < 0) p.x = width; if (p.x > width) p.x = 0; if (p.y < 0) p.y = height; if (p.y > height) p.y = 0;
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.beginPath(); ctx.arc(p.x, p.y, 1, 0, Math.PI*2); ctx.fill();
+            });
+            for (let i = 0; i < particles.length; i++) {
+                for (let j = i + 1; j < particles.length; j++) {
+                    let dist = Math.hypot(particles[i].x - particles[j].x, particles[i].y - particles[j].y);
+                    if (dist < 70) {
+                        ctx.strokeStyle = `rgba(100, 200, 255, ${0.8 - dist/70})`;
+                        ctx.beginPath(); ctx.moveTo(particles[i].x, particles[i].y); ctx.lineTo(particles[j].x, particles[j].y); ctx.stroke();
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // EFEITO 4: Lamparina + Cone (CORRIGIDO)
+        // ==========================================
+        function drawEffect4() {
+            gameProps.charge -= 0.1; 
+            if (gameProps.charge <= 0) {
+                if (gameProps.batteries > 0) { gameProps.batteries--; gameProps.charge = 100; } else { gameProps.charge = 0; }
+            }
+
+            if (gameProps.pickups.length < 5) gameProps.pickups.push({ x: Math.random() * width, y: Math.random() * height });
+
+            for (let i = gameProps.pickups.length - 1; i >= 0; i--) {
+                if (Math.hypot(mouse.x - gameProps.pickups[i].x, mouse.y - gameProps.pickups[i].y) < 25 && gameProps.batteries < 3) {
+                    gameProps.batteries++; gameProps.pickups.splice(i, 1);
+                }
+            }
+
+            gameProps.dust.forEach(d => {
+                d.x += d.vx; d.y += d.vy;
+                if (d.x < 0) d.x = width; if (d.x > width) d.x = 0; if (d.y < 0) d.y = height; if (d.y > height) d.y = 0;
+            });
+
+            // 1. Pinta o mapa de breu total
+            ctx.fillStyle = '#020202';
+            ctx.fillRect(0, 0, width, height);
+
+            let lampRad = gameProps.charge > 0 ? 100 : 40; // Luz ambiente da lamparina
+            let coneLen = gameProps.charge > 0 ? 300 : 100; // Cone direcional
+            let coneSpread = Math.PI / 2.5; // Cone super largo (aprox 140 graus)
+
+            // 2. Fura a escuridão criando as áreas de visão
+            ctx.globalCompositeOperation = 'destination-out';
+            
+            // Furo Redondo 360 (Lamparina)
+            let lampHole = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, lampRad);
+            lampHole.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            lampHole.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            ctx.fillStyle = lampHole;
+            ctx.beginPath(); ctx.arc(mouse.x, mouse.y, lampRad, 0, Math.PI*2); ctx.fill();
+
+            // Furo do Cone (AGORA FUNCIONANDO PERFEITAMENTE)
+            let coneHole = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, coneLen);
+            coneHole.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+            coneHole.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            ctx.fillStyle = coneHole;
+            ctx.beginPath(); ctx.moveTo(mouse.x, mouse.y);
+            ctx.arc(mouse.x, mouse.y, coneLen, mouse.angle - coneSpread, mouse.angle + coneSpread);
+            ctx.lineTo(mouse.x, mouse.y); ctx.fill();
+
+            // 3. Desenha o mapa e itens (só vão aparecer onde está furado)
+            ctx.globalCompositeOperation = 'destination-over';
+            ctx.strokeStyle = '#121212'; ctx.lineWidth = 1; ctx.beginPath();
+            for(let x = 0; x < width; x += 15) { ctx.moveTo(x, 0); ctx.lineTo(x, height); } 
+            for(let y = 0; y < height; y += 15) { ctx.moveTo(0, y); ctx.lineTo(width, y); }
+            ctx.stroke();
+
+            gameProps.pickups.forEach(p => {
+                ctx.fillStyle = '#2ecc71'; ctx.fillRect(p.x - 2, p.y - 4, 4, 8);
+                ctx.fillStyle = '#27ae60'; ctx.fillRect(p.x - 1, p.y - 5, 2, 1);
+            });
+
+            ctx.fillStyle = '#ffffff';
+            gameProps.dust.forEach(d => { ctx.beginPath(); ctx.arc(d.x, d.y, d.size, 0, Math.PI * 2); ctx.fill(); });
+
+            // 4. Coloriza as luzes (Laranja Quente para dar ar de fogo/lamparina)
+            ctx.globalCompositeOperation = 'lighter';
+            
+            // Coloriza Lamparina
+            let lampColor = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, lampRad);
+            lampColor.addColorStop(0, gameProps.charge>0 ? 'rgba(255, 200, 50, 0.2)' : 'rgba(255, 50, 0, 0.2)');
+            lampColor.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = lampColor;
+            ctx.beginPath(); ctx.arc(mouse.x, mouse.y, lampRad, 0, Math.PI*2); ctx.fill();
+
+            // Coloriza Cone
+            let coneColor = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, coneLen);
+            coneColor.addColorStop(0, gameProps.charge>0 ? 'rgba(255, 220, 100, 0.15)' : 'rgba(255, 100, 0, 0.1)');
+            coneColor.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = coneColor;
+            ctx.beginPath(); ctx.moveTo(mouse.x, mouse.y);
+            ctx.arc(mouse.x, mouse.y, coneLen, mouse.angle - coneSpread, mouse.angle + coneSpread);
+            ctx.lineTo(mouse.x, mouse.y); ctx.fill();
+
+            // Interface
+            ctx.globalCompositeOperation = 'source-over'; 
+            ctx.fillStyle = '#777'; ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 2.5, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = (gameProps.charge <= 0) ? '#ff3333' : '#aaaaaa'; ctx.font = 'bold 9px Arial'; 
+            ctx.fillText(`${Math.max(0, Math.floor(gameProps.charge))}% | Bat: ${gameProps.batteries}/3`, mouse.x + 8, mouse.y + 12);
+        }
+
+        // ==========================================
+        // EFEITO 5: Buraco Negro
+        // ==========================================
+        function drawEffect5() {
+            particles.forEach(p => {
+                let speedMult = 1 + (1000 / (p.radius + 10));
+                p.angle += p.speed * speedMult * 0.05; p.radius -= speedMult * 0.5;
+                if (p.radius < 2) { p.radius = Math.max(width, height); p.angle = Math.random() * Math.PI * 2; }
+                ctx.fillStyle = `rgba(${150 + p.radius*0.2}, 100, 255, ${Math.min(1, 100 / p.radius)})`;
+                ctx.beginPath(); ctx.arc(mouse.x + Math.cos(p.angle) * p.radius, mouse.y + Math.sin(p.angle) * p.radius, p.size, 0, Math.PI * 2); ctx.fill();
+            });
+            ctx.fillStyle = '#000'; ctx.shadowBlur = 30; ctx.shadowColor = '#a020f0';
+            ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 8, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; 
+        }
+
+        // ==========================================
+        // EFEITO 6: Barco Real (Rastro Vetorial e Contínuo)
+        // ==========================================
+        function drawEffect6() {
+            let speed = Math.hypot(mouse.vx, mouse.vy);
+            
+            // Grava pontos novos (unshift = adiciona no INÍCIO do array)
+            if (speed > 1) {
+                ripples.unshift({ x: mouse.x, y: mouse.y, angle: mouse.angle, spread: 2, life: 1 });
+                if (ripples.length > 80) ripples.pop(); // Mantém a trilha com no máximo 80 segmentos
+            }
+
+            // Atualiza (afasta a onda e some)
+            for (let i = 0; i < ripples.length; i++) {
+                ripples[i].spread += 0.8; 
+                ripples[i].life -= 0.012;
+            }
+            // Remove mortos
+            ripples = ripples.filter(r => r.life > 0);
+
+            // Desenho do "V" Vetorial Perfeito usando Segmentos de Linha
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            for (let i = 0; i < ripples.length - 1; i++) {
+                let n1 = ripples[i];
+                let n2 = ripples[i+1];
+
+                // --- LADO ESQUERDO DO BARCO ---
+                let l1x = n1.x + Math.cos(n1.angle - Math.PI/2.2) * n1.spread;
+                let l1y = n1.y + Math.sin(n1.angle - Math.PI/2.2) * n1.spread;
+                let l2x = n2.x + Math.cos(n2.angle - Math.PI/2.2) * n2.spread;
+                let l2y = n2.y + Math.sin(n2.angle - Math.PI/2.2) * n2.spread;
+
+                ctx.beginPath(); ctx.moveTo(l1x, l1y); ctx.lineTo(l2x, l2y);
+                ctx.strokeStyle = `rgba(180, 230, 255, ${n1.life * 0.8})`;
+                ctx.lineWidth = 1.5 + (1 - n1.life) * 2; // Fica um pouco mais grossa à medida que dissolve
+                ctx.stroke();
+
+                // --- LADO DIREITO DO BARCO ---
+                let r1x = n1.x + Math.cos(n1.angle + Math.PI/2.2) * n1.spread;
+                let r1y = n1.y + Math.sin(n1.angle + Math.PI/2.2) * n1.spread;
+                let r2x = n2.x + Math.cos(n2.angle + Math.PI/2.2) * n2.spread;
+                let r2y = n2.y + Math.sin(n2.angle + Math.PI/2.2) * n2.spread;
+
+                ctx.beginPath(); ctx.moveTo(r1x, r1y); ctx.lineTo(r2x, r2y);
+                ctx.strokeStyle = `rgba(180, 230, 255, ${n1.life * 0.8})`;
+                ctx.lineWidth = 1.5 + (1 - n1.life) * 2;
+                ctx.stroke();
+            }
+
+            // Partículas soltas na esteira interna para dar realidade da espuma
+            if (speed > 2 && Math.random() > 0.4) {
+                particles.push({
+                    x: mouse.x + (Math.random() - 0.5) * 12, y: mouse.y + (Math.random() - 0.5) * 12,
+                    vx: -mouse.vx * 0.05, vy: -mouse.vy * 0.05, life: 1, size: Math.random() * 2 + 0.5
+                });
+            }
+
+            ctx.globalCompositeOperation = 'lighter';
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= 0.02;
+                if (p.life <= 0) particles.splice(i, 1);
+                else { ctx.fillStyle = `rgba(255, 255, 255, ${p.life})`; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill(); }
+            }
+            ctx.globalCompositeOperation = 'source-over';
+
+            // GEOMETRIA DO BARCO MÍNIMALISTA NO CURSOR
+            ctx.save();
+            ctx.translate(mouse.x, mouse.y);
+            ctx.rotate(mouse.angle); // Vira exatamente pra onde o barco está indo
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.moveTo(10, 0);   // Proa
+            ctx.lineTo(-6, 4);   // Popa Direita
+            ctx.lineTo(-4, 0);   // Recuo do Motor
+            ctx.lineTo(-6, -4);  // Popa Esquerda
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+
+        // ==========================================
+        // LOOP PRINCIPAL DE RENDERIZAÇÃO
+        // ==========================================
+        function animate() {
+            // Garante que a transição de rotação sempre aconteça, mesmo com mouse parado
+            updateMouseAngle(); 
+
+            // Fundos dinâmicos por efeito
+            if (currentEffect === 5) { // Buraco Negro
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.15)'; ctx.fillRect(0, 0, width, height);
+            } else if (currentEffect === 6) { // Rastro de Barco (Água do mar escura)
+                ctx.fillStyle = '#051020'; ctx.fillRect(0, 0, width, height);
+            } else if (currentEffect !== 4) { // Padrão
+                ctx.clearRect(0, 0, width, height); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, width, height);
+            }
+
+            if (currentEffect === 1) drawEffect1();
+            else if (currentEffect === 2) drawEffect2();
+            else if (currentEffect === 3) drawEffect3();
+            else if (currentEffect === 4) drawEffect4();
+            else if (currentEffect === 5) drawEffect5();
+            else if (currentEffect === 6) drawEffect6();
+
+            mouse.vx *= 0.8; mouse.vy *= 0.8;
+
+            requestAnimationFrame(animate);
+        }
+
+        resize(); animate();
+    </script>
+</body>
+</html>
